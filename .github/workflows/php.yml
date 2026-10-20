@@ -1,0 +1,67 @@
+name: php
+# Static PHP CLIs for MFTF Studio to carry, built with static-php-cli. A pull
+# request that changes this file builds them; running the workflow on main
+# publishes each as a release named php-<version>-<BUILD>.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/php.yml
+  workflow_dispatch:
+env:
+  BUILD: '1'
+  SPC: '2.8.5'
+  EXTENSIONS: bcmath,bz2,ctype,curl,dom,fileinfo,filter,gd,iconv,igbinary,intl,mbregex,mbstring,opcache,openssl,pcntl,pdo,pdo_sqlite,phar,posix,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: crazywhalecc/static-php-cli
+          ref: ${{ env.SPC }}
+      - name: Download sources
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./bin/spc-alpine-docker download --with-php=${{ matrix.php }} --for-extensions="$EXTENSIONS" --prefer-pre-built --retry=3
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./bin/spc-alpine-docker build "$EXTENSIONS" --build-cli
+      - name: Check
+        run: |
+          php=buildroot/bin/php
+          "$php" -v
+          "$php" -r 'exit(str_starts_with(PHP_VERSION, $argv[1] . ".") ? 0 : 1);' "${{ matrix.php }}"
+          loaded="$("$php" -r 'echo strtolower(implode(",", get_loaded_extensions()));')"
+          for ext in ${EXTENSIONS//,/ }; do
+            case "$ext" in
+              mbregex) "$php" -r 'exit(function_exists("mb_ereg") ? 0 : 1);' ;;
+              opcache) [[ ",$loaded," == *",zend opcache,"* ]] ;;
+              *) [[ ",$loaded," == *",$ext,"* ]] ;;
+            esac || { echo "missing $ext"; exit 1; }
+          done
+          echo "RELEASE=php-$("$php" -r 'echo PHP_VERSION;')-$BUILD" >> "$GITHUB_ENV"
+      - name: Package
+        run: |
+          mkdir php
+          cp buildroot/bin/php php/php
+          cp -r buildroot/license php/license
+          tar czf "$RELEASE-linux-x86_64.tar.gz" -C php .
+          sha256sum "$RELEASE-linux-x86_64.tar.gz" > "$RELEASE-linux-x86_64.tar.gz.sha256"
+          cat "$RELEASE-linux-x86_64.tar.gz.sha256"
+      - name: Release
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$RELEASE" \
+            --notes "PHP CLI for linux x86_64, static (musl), NTS, built with static-php-cli $SPC. Extensions: $EXTENSIONS. Licences of PHP, its extensions and the libraries linked in are in license/." \
+            "$RELEASE-linux-x86_64.tar.gz" "$RELEASE-linux-x86_64.tar.gz.sha256"
