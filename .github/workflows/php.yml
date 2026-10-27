@@ -14,6 +14,7 @@ on:
 env:
   BUILD: '2'
   SPC: '2.8.5'
+  XDEBUG: '3.5.3'
   EXTENSIONS: bcmath,bz2,ctype,curl,dom,fileinfo,filter,gd,iconv,igbinary,intl,mbregex,mbstring,opcache,openssl,pcntl,pdo,pdo_sqlite,phar,posix,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib
 jobs:
   build:
@@ -33,7 +34,7 @@ jobs:
       - name: Download sources
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./bin/spc-gnu-docker download --with-php=${{ matrix.php }} --for-extensions="$EXTENSIONS,xdebug" --prefer-pre-built --retry=3
+        run: ./bin/spc-gnu-docker download --with-php=${{ matrix.php }} --for-extensions="$EXTENSIONS,xdebug" --custom-url="xdebug:https://github.com/xdebug/xdebug/archive/refs/tags/$XDEBUG.tar.gz" --prefer-pre-built --retry=3
       - name: Build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,6 +54,7 @@ jobs:
           done
           ldd "$php" buildroot/modules/xdebug.so
           "$php" -d zend_extension="$PWD/buildroot/modules/xdebug.so" --ri xdebug
+          "$php" -d zend_extension="$PWD/buildroot/modules/xdebug.so" -r 'exit(phpversion("xdebug") === $argv[1] ? 0 : 1);' "$XDEBUG"
           newest="$(objdump -T "$php" buildroot/modules/xdebug.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
           echo "newest glibc symbol: $newest"
           [[ "$(printf '%s\n' "$newest" GLIBC_2.17 | sort -V | tail -1)" == GLIBC_2.17 ]]
@@ -73,5 +75,5 @@ jobs:
         run: |
           gh release create "$RELEASE" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "$RELEASE" \
-            --notes "PHP CLI for linux x86_64, needs glibc 2.17 or newer, NTS, built with static-php-cli $SPC. Extensions: $EXTENSIONS. xdebug.so beside it, loaded with -d zend_extension. Licences of PHP, its extensions and the libraries linked in are in license/." \
+            --notes "PHP CLI for linux x86_64, needs glibc 2.17 or newer, NTS, built with static-php-cli $SPC. Extensions: $EXTENSIONS. Xdebug $XDEBUG beside it as xdebug.so, loaded with -d zend_extension. Licences of PHP, its extensions and the libraries linked in are in license/." \
             "$RELEASE-linux-x86_64.tar.gz" "$RELEASE-linux-x86_64.tar.gz.sha256"
