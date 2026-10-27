@@ -1,14 +1,18 @@
 name: php
-# Static PHP CLIs for MFTF Studio to carry, built with static-php-cli. A pull
-# request that changes this file builds them; running the workflow on main
-# publishes each as a release named php-<version>-<BUILD>.
+# PHP CLIs for MFTF Studio to carry, built with static-php-cli, each with
+# Xdebug beside it. A pull request that changes this file builds them; running
+# the workflow on main publishes each as a release named php-<version>-<BUILD>.
+#
+# Built against glibc rather than musl: Xdebug can only be a shared extension,
+# and a fully static PHP cannot load one. The build runs in CentOS 7, so the
+# binary needs no glibc newer than 2.17.
 on:
   pull_request:
     paths:
       - .github/workflows/php.yml
   workflow_dispatch:
 env:
-  BUILD: '1'
+  BUILD: '2'
   SPC: '2.8.5'
   EXTENSIONS: bcmath,bz2,ctype,curl,dom,fileinfo,filter,gd,iconv,igbinary,intl,mbregex,mbstring,opcache,openssl,pcntl,pdo,pdo_sqlite,phar,posix,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib
 jobs:
@@ -29,11 +33,11 @@ jobs:
       - name: Download sources
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./bin/spc-alpine-docker download --with-php=${{ matrix.php }} --for-extensions="$EXTENSIONS" --prefer-pre-built --retry=3
+        run: ./bin/spc-gnu-docker download --with-php=${{ matrix.php }} --for-extensions="$EXTENSIONS,xdebug" --prefer-pre-built --retry=3
       - name: Build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./bin/spc-alpine-docker build "$EXTENSIONS" --build-cli
+        run: ./bin/spc-gnu-docker build "$EXTENSIONS" --build-shared=xdebug --build-cli
       - name: Check
         run: |
           php=buildroot/bin/php
@@ -47,11 +51,17 @@ jobs:
               *) [[ ",$loaded," == *",$ext,"* ]] ;;
             esac || { echo "missing $ext"; exit 1; }
           done
+          ldd "$php" buildroot/modules/xdebug.so
+          "$php" -d zend_extension="$PWD/buildroot/modules/xdebug.so" --ri xdebug
+          newest="$(objdump -T "$php" buildroot/modules/xdebug.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          echo "newest glibc symbol: $newest"
+          [[ "$(printf '%s\n' "$newest" GLIBC_2.17 | sort -V | tail -1)" == GLIBC_2.17 ]]
           echo "RELEASE=php-$("$php" -r 'echo PHP_VERSION;')-$BUILD" >> "$GITHUB_ENV"
       - name: Package
         run: |
           mkdir php
           cp buildroot/bin/php php/php
+          cp buildroot/modules/xdebug.so php/xdebug.so
           cp -r buildroot/license php/license
           tar czf "$RELEASE-linux-x86_64.tar.gz" -C php .
           sha256sum "$RELEASE-linux-x86_64.tar.gz" > "$RELEASE-linux-x86_64.tar.gz.sha256"
@@ -63,5 +73,5 @@ jobs:
         run: |
           gh release create "$RELEASE" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "$RELEASE" \
-            --notes "PHP CLI for linux x86_64, static (musl), NTS, built with static-php-cli $SPC. Extensions: $EXTENSIONS. Licences of PHP, its extensions and the libraries linked in are in license/." \
+            --notes "PHP CLI for linux x86_64, needs glibc 2.17 or newer, NTS, built with static-php-cli $SPC. Extensions: $EXTENSIONS. xdebug.so beside it, loaded with -d zend_extension. Licences of PHP, its extensions and the libraries linked in are in license/." \
             "$RELEASE-linux-x86_64.tar.gz" "$RELEASE-linux-x86_64.tar.gz.sha256"
