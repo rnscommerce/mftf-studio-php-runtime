@@ -16,6 +16,8 @@ env:
   BUILD: '1'
   XDEBUG: '3.5.3'
   IGBINARY: '3.2.16'
+  COMPOSER: '2.10.2'
+  COMPOSER_SHA256: '5ee7125f8a30a34d246cefdc0bc85b8a783b28f2aec968994118512350d28027'
 jobs:
   build:
     runs-on: windows-latest
@@ -81,6 +83,12 @@ jobs:
           zend_extension=${MFTF_STUDIO_PHP_RUNTIME}\ext\php_xdebug.dll
           xdebug.mode=off
           INI
+      - name: Composer
+        run: |
+          curl -fsSL "https://getcomposer.org/download/$COMPOSER/composer.phar" -o php/composer.phar
+          echo "$COMPOSER_SHA256  php/composer.phar" | sha256sum -c -
+          printf '@echo off\r\n"%%~dp0php.exe" "%%~dp0composer.phar" %%*\r\n' > php/composer.bat
+          curl -fsSL "https://raw.githubusercontent.com/composer/composer/$COMPOSER/LICENSE" -o php/license/composer.txt
       - name: Check
         env:
           PHP: ${{ matrix.php }}
@@ -98,6 +106,8 @@ jobs:
           "$php" -r 'exit(ini_get("memory_limit") === "-1" ? 0 : 1);'
           "$php" -r 'exit(phpversion("xdebug") === $argv[1] ? 0 : 1);' "$XDEBUG"
           "$php" -r 'exit(phpversion("igbinary") === $argv[1] ? 0 : 1);' "$IGBINARY"
+          cd .. && cmd //c "$(cygpath -w "$PWD/php/composer.bat") --version" | grep -q "Composer version $COMPOSER"
+          cd elsewhere
           echo "RELEASE=php-$("$php" -r 'echo PHP_VERSION;')-windows-$BUILD" >> "$GITHUB_ENV"
       - name: MFTF answers
         env:
@@ -128,5 +138,5 @@ jobs:
           gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
             || gh release create "$RELEASE" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
               --title "$RELEASE" \
-              --notes "PHP CLI for Windows x64, NTS, from windows.php.net, with Xdebug $XDEBUG and igbinary $IGBINARY beside it and the Visual C++ runtime it needs. php.ini reads MFTF_STUDIO_PHP_RUNTIME for extension_dir and Xdebug. Licences are in license/."
+              --notes "PHP CLI for Windows x64, NTS, from windows.php.net, with Composer $COMPOSER, Xdebug $XDEBUG and igbinary $IGBINARY beside it and the Visual C++ runtime it needs. php.ini reads MFTF_STUDIO_PHP_RUNTIME for extension_dir and Xdebug. Licences are in license/."
           gh release upload "$RELEASE" --repo "$GITHUB_REPOSITORY" --clobber "$name.zip" "$name.zip.sha256"
