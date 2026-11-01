@@ -1,71 +1,94 @@
 name: php-windows-spike
-# Throwaway: what a Windows PHP can and cannot do for MFTF Studio.
+# Throwaway: a Windows PHP for MFTF Studio assembled from the official zip.
 on:
   pull_request:
     paths:
       - .github/workflows/php-windows-spike.yml
 env:
-  SPC: '2.8.5'
-  WANTED: bcmath,bz2,ctype,curl,dom,fileinfo,filter,gd,iconv,igbinary,intl,mbstring,opcache,openssl,pdo,pdo_sqlite,phar,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib,pcntl,posix,xdebug
+  PHP: '8.3'
+  XDEBUG: '3.5.3'
   MFTF: mftf-6.0.1-1
 jobs:
-  reference:
-    # A conventional Windows PHP: what runs MFTF here is the baseline the carried one must match.
+  assemble:
     runs-on: windows-latest
-    steps:
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.3'
-          extensions: bcmath,bz2,curl,dom,fileinfo,gd,iconv,igbinary,intl,mbstring,openssl,pdo_sqlite,simplexml,sockets,sodium,xdebug,zip
-          ini-values: memory_limit=-1
-          tools: composer
-      - name: Extensions
+    defaults:
+      run:
         shell: bash
+    steps:
+      - name: PHP from windows.php.net
         run: |
-          php -v
-          loaded="$(php -r 'echo strtolower(implode(",", get_loaded_extensions()));')"
-          for ext in ${WANTED//,/ }; do
+          curl -fsSL https://windows.php.net/downloads/releases/releases.json -o releases.json
+          node -e '
+            const r = require("./releases.json")[process.env.PHP];
+            const k = Object.keys(r).find((k) => k.startsWith("nts-") && k.endsWith("-x64"));
+            console.log(r.version, k, r[k].zip.path, r[k].zip.sha256);
+            require("fs").writeFileSync("php.env", `VERSION=${r.version}\nZIP=${r[k].zip.path}\nSHA=${r[k].zip.sha256}\nVS=${k.split("-")[1]}\n`);
+          '
+          source php.env
+          curl -fsSL "https://windows.php.net/downloads/releases/$ZIP" -o php.zip
+          echo "$SHA  php.zip" | sha256sum -c -
+          mkdir runtime && cd runtime && 7z x -y ../php.zip > /dev/null && ls
+          echo "VS=$VS" >> "$GITHUB_ENV"
+      - name: Xdebug and igbinary DLLs
+        run: |
+          cd runtime
+          curl -fsSL "https://xdebug.org/files/php_xdebug-$XDEBUG-$PHP-nts-$VS-x86_64.dll" -o ext/php_xdebug.dll
+          base=https://downloads.php.net/~windows/pecl/releases/igbinary
+          v="$(curl -fsSL $base/ | grep -oE 'href="[0-9][0-9.]*/' | tr -d '"' | sed 's/href=//; s#/##' | sort -V | tail -1)"
+          echo "igbinary $v"
+          curl -fsSL "$base/$v/php_igbinary-$v-$PHP-nts-$VS-x64.zip" -o ../igbinary.zip
+          7z e -y ../igbinary.zip php_igbinary.dll -oext > /dev/null
+          ls ext | grep -E 'xdebug|igbinary'
+      - name: php.ini and Composer
+        run: |
+          cd runtime
+          cat > php.ini <<'INI'
+          memory_limit=-1
+          extension_dir=ext
+          extension=bz2
+          extension=curl
+          extension=fileinfo
+          extension=gd
+          extension=intl
+          extension=mbstring
+          extension=openssl
+          extension=pdo_sqlite
+          extension=sockets
+          extension=sodium
+          extension=sqlite3
+          extension=zip
+          extension=igbinary
+          zend_extension=opcache
+          zend_extension=xdebug
+          xdebug.mode=off
+          INI
+          curl -fsSL https://getcomposer.org/download/2.10.2/composer.phar -o composer.phar
+          printf '@echo off\r\n"%%~dp0php.exe" "%%~dp0composer.phar" %%*\r\n' > composer.bat
+      - name: Extensions
+        run: |
+          cd runtime
+          export PHPRC="$PWD"
+          ./php.exe -v
+          loaded="$(./php.exe -r 'echo strtolower(implode(",", get_loaded_extensions()));')"
+          for ext in bcmath bz2 ctype curl dom fileinfo filter gd iconv igbinary intl mbstring "zend opcache" openssl pdo pdo_sqlite phar session simplexml sockets sodium sqlite3 tokenizer xml zip zlib xdebug; do
             [[ ",$loaded," == *",$ext,"* ]] && echo "ok       $ext" || echo "MISSING  $ext"
           done
-          php -r 'foreach (["pcntl_fork","posix_setsid","pcntl_async_signals","igbinary_serialize","proc_open","shell_exec"] as $f) echo $f, " ", function_exists($f) ? "yes" : "no", "\n";'
+          ./php.exe --ri xdebug | head -5
+          ./composer.bat --version
       - name: MFTF answers
-        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          export PHPRC="$PWD/runtime"
           mkdir mftf && cd mftf
           gh release download "$MFTF" -R rnscommerce/mftf-distros -p '*.tgz'
           tar xzf *.tgz
-          cd 6.0.1
-          php bin/mftf --version
-          php bin/mftf list:tests --help | head -5
-        env:
-          GH_TOKEN: ${{ github.token }}
-      - name: What `find` and `grep` are here
-        shell: bash
+          "$PHPRC/php.exe" 6.0.1/bin/mftf --version
+      - name: Size
+        run: du -sh runtime; du -sh runtime/* | sort -h | tail -6
+      - name: Without the Visual C++ runtime
         run: |
-          which -a find grep || true
-          find --version 2>&1 | head -2 || true
-          find . -maxdepth 1 -name '*.yml' -printf '%p\t%T@\t%s\n' 2>&1 | head -2 || true
-  static:
-    # The same recipe as the Linux runtime, on static-php-cli for Windows.
-    runs-on: windows-latest
-    timeout-minutes: 120
-    continue-on-error: true
-    steps:
-      - name: Fetch spc
-        shell: pwsh
-        run: Invoke-WebRequest "https://github.com/crazywhalecc/static-php-cli/releases/download/$env:SPC/spc-windows-x64.exe" -OutFile spc.exe
-      - name: Doctor
-        run: .\spc.exe doctor --auto-fix
-      - name: Download sources
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: .\spc.exe download --with-php=8.3 --for-extensions="bcmath,bz2,ctype,curl,dom,fileinfo,filter,iconv,igbinary,mbstring,opcache,openssl,pdo,pdo_sqlite,phar,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib" --prefer-pre-built --retry=3
-      - name: Build
-        shell: pwsh
-        run: .\spc.exe build "bcmath,bz2,ctype,curl,dom,fileinfo,filter,iconv,igbinary,mbstring,opcache,openssl,pdo,pdo_sqlite,phar,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib" --build-cli
-      - name: Extensions
-        shell: pwsh
-        run: |
-          buildroot\bin\php.exe -v
-          buildroot\bin\php.exe -r 'echo implode("\n", get_loaded_extensions());'
+          # What a bare machine lacks: PHP's own DLL dependencies.
+          cd runtime
+          ls *.dll | head -20
+          ls /c/Windows/System32/vcruntime140.dll /c/Windows/System32/vcruntime140_1.dll /c/Windows/System32/msvcp140.dll
