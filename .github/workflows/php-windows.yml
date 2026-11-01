@@ -115,6 +115,10 @@ jobs:
           sha256sum "$name.zip" > "$name.zip.sha256"
           cat "$name.zip.sha256"
           du -sh php "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ matrix.php }}-windows
+          path: ${{ env.RELEASE }}-x86_64.zip
       - name: Release
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         env:
