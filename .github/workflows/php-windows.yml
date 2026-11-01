@@ -1,0 +1,142 @@
+name: php-windows
+# The PHP CLI for MFTF Studio to carry on Windows, assembled from windows.php.net's
+# own build with Xdebug and igbinary beside it. A pull request that changes this
+# file assembles it; running the workflow on main publishes it as a release named
+# php-<version>-windows-<BUILD>.
+#
+# Official build rather than static-php-cli: that needs a Visual Studio the
+# hosted runner does not have for it, and cannot build Xdebug as a shared
+# extension, which a PHP that loads one has to be.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/php-windows.yml
+  workflow_dispatch:
+env:
+  BUILD: '1'
+  XDEBUG: '3.5.3'
+  IGBINARY: '3.2.16'
+  COMPOSER: '2.10.2'
+  COMPOSER_SHA256: '5ee7125f8a30a34d246cefdc0bc85b8a783b28f2aec968994118512350d28027'
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4']
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: PHP from windows.php.net
+        env:
+          PHP: ${{ matrix.php }}
+        run: |
+          curl -fsSL https://windows.php.net/downloads/releases/releases.json -o releases.json
+          node -e '
+            const r = require("./releases.json")[process.env.PHP];
+            const k = Object.keys(r).find((k) => k.startsWith("nts-") && k.endsWith("-x64"));
+            require("fs").writeFileSync("php.env", `VERSION=${r.version.replace(/-\d+$/, "")}\nZIP=${r[k].zip.path}\nSHA=${r[k].zip.sha256}\nVS=${k.split("-")[1]}\n`);
+          '
+          source php.env
+          curl -fsSL "https://windows.php.net/downloads/releases/$ZIP" -o php.zip
+          echo "$SHA  php.zip" | sha256sum -c -
+          mkdir php && 7z x -y php.zip -ophp > /dev/null
+          rm -rf php/dev php/extras php/php-cgi.exe php/phpdbg.exe php/php8phpdbg.dll php/php8embed.lib php/php.ini-* php/deplister.exe
+          cat php.env >> "$GITHUB_ENV"
+      - name: Xdebug, igbinary and their licences
+        env:
+          PHP: ${{ matrix.php }}
+        run: |
+          curl -fsSL "https://xdebug.org/files/php_xdebug-$XDEBUG-$PHP-nts-$VS-x86_64.dll" -o php/ext/php_xdebug.dll
+          curl -fsSL "https://downloads.php.net/~windows/pecl/releases/igbinary/$IGBINARY/php_igbinary-$IGBINARY-$PHP-nts-$VS-x64.zip" -o igbinary.zip
+          7z e -y igbinary.zip php_igbinary.dll -ophp/ext > /dev/null
+          mkdir php/license
+          mv php/license.txt php/license/php.txt
+          curl -fsSL "https://raw.githubusercontent.com/xdebug/xdebug/$XDEBUG/LICENSE" -o php/license/xdebug.txt
+          curl -fsSL "https://raw.githubusercontent.com/igbinary/igbinary/$IGBINARY/COPYING" -o php/license/igbinary.txt
+      - name: The Visual C++ runtime beside it
+        run: cp /c/Windows/System32/{vcruntime140.dll,vcruntime140_1.dll,msvcp140.dll} php/
+      - name: php.ini
+        run: |
+          cat > php/php.ini <<'INI'
+          memory_limit=-1
+          extension_dir=${MFTF_STUDIO_PHP_RUNTIME}\ext
+          extension=bz2
+          extension=curl
+          extension=fileinfo
+          extension=gd
+          extension=intl
+          extension=mbstring
+          extension=openssl
+          extension=pdo_sqlite
+          extension=sockets
+          extension=sodium
+          extension=sqlite3
+          extension=zip
+          extension=igbinary
+          zend_extension=opcache
+          zend_extension=${MFTF_STUDIO_PHP_RUNTIME}\ext\php_xdebug.dll
+          xdebug.mode=off
+          INI
+      - name: Composer
+        run: |
+          curl -fsSL "https://getcomposer.org/download/$COMPOSER/composer.phar" -o php/composer.phar
+          echo "$COMPOSER_SHA256  php/composer.phar" | sha256sum -c -
+          printf '@echo off\r\n"%%~dp0php.exe" "%%~dp0composer.phar" %%*\r\n' > php/composer.bat
+          curl -fsSL "https://raw.githubusercontent.com/composer/composer/$COMPOSER/LICENSE" -o php/license/composer.txt
+      - name: Check
+        env:
+          PHP: ${{ matrix.php }}
+        run: |
+          export MFTF_STUDIO_PHP_RUNTIME="$(cygpath -w "$PWD/php")"
+          php="$PWD/php/php.exe"
+          # From another directory, as Studio starts it: the ini is found beside the binary.
+          mkdir elsewhere && cd elsewhere
+          "$php" -v
+          "$php" -r 'exit(str_starts_with(PHP_VERSION, $argv[1] . ".") ? 0 : 1);' "$PHP"
+          loaded="$("$php" -r 'echo strtolower(implode(",", get_loaded_extensions()));')"
+          for ext in bcmath bz2 ctype curl dom fileinfo filter gd iconv igbinary intl mbstring "zend opcache" openssl pdo pdo_sqlite phar session simplexml sockets sodium sqlite3 tokenizer xml zip zlib xdebug; do
+            [[ ",$loaded," == *",$ext,"* ]] || { echo "missing $ext"; exit 1; }
+          done
+          "$php" -r 'exit(ini_get("memory_limit") === "-1" ? 0 : 1);'
+          "$php" -r 'exit(phpversion("xdebug") === $argv[1] ? 0 : 1);' "$XDEBUG"
+          "$php" -r 'exit(phpversion("igbinary") === $argv[1] ? 0 : 1);' "$IGBINARY"
+          cd .. && cmd //c "$(cygpath -w "$PWD/php/composer.bat") --version" | grep -q "Composer version $COMPOSER"
+          cd elsewhere
+          echo "RELEASE=php-$("$php" -r 'echo PHP_VERSION;')-windows-$BUILD" >> "$GITHUB_ENV"
+      - name: MFTF answers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export MFTF_STUDIO_PHP_RUNTIME="$(cygpath -w "$PWD/php")"
+          mkdir mftf && cd mftf
+          gh release download mftf-6.0.1-1 -R rnscommerce/mftf-distros -p '*.tgz'
+          tar xzf *.tgz
+          "$PWD/../php/php.exe" 6.0.1/bin/mftf --version
+      - name: Package
+        run: |
+          name="$RELEASE-x86_64"
+          (cd php && 7z a -tzip -mx=9 "../$name.zip" . > /dev/null)
+          sha256sum "$name.zip" > "$name.zip.sha256"
+          cat "$name.zip.sha256"
+          du -sh php "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ matrix.php }}-windows
+          path: ${{ env.RELEASE }}-x86_64.zip
+      - name: Release
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name="$RELEASE-x86_64"
+          gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
+            || gh release create "$RELEASE" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$RELEASE" \
+              --notes "PHP CLI for Windows x64, NTS, from windows.php.net, with Composer $COMPOSER, Xdebug $XDEBUG and igbinary $IGBINARY beside it and the Visual C++ runtime it needs. php.ini reads MFTF_STUDIO_PHP_RUNTIME for extension_dir and Xdebug. Licences are in license/."
+          gh release upload "$RELEASE" --repo "$GITHUB_REPOSITORY" --clobber "$name.zip" "$name.zip.sha256"
