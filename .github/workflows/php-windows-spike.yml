@@ -1,0 +1,71 @@
+name: php-windows-spike
+# Throwaway: what a Windows PHP can and cannot do for MFTF Studio.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/php-windows-spike.yml
+env:
+  SPC: '2.8.5'
+  WANTED: bcmath,bz2,ctype,curl,dom,fileinfo,filter,gd,iconv,igbinary,intl,mbstring,opcache,openssl,pdo,pdo_sqlite,phar,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib,pcntl,posix,xdebug
+  MFTF: mftf-6.0.1-1
+jobs:
+  reference:
+    # A conventional Windows PHP: what runs MFTF here is the baseline the carried one must match.
+    runs-on: windows-latest
+    steps:
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: bcmath,bz2,curl,dom,fileinfo,gd,iconv,igbinary,intl,mbstring,openssl,pdo_sqlite,simplexml,sockets,sodium,xdebug,zip
+          ini-values: memory_limit=-1
+          tools: composer
+      - name: Extensions
+        shell: bash
+        run: |
+          php -v
+          loaded="$(php -r 'echo strtolower(implode(",", get_loaded_extensions()));')"
+          for ext in ${WANTED//,/ }; do
+            [[ ",$loaded," == *",$ext,"* ]] && echo "ok       $ext" || echo "MISSING  $ext"
+          done
+          php -r 'foreach (["pcntl_fork","posix_setsid","pcntl_async_signals","igbinary_serialize","proc_open","shell_exec"] as $f) echo $f, " ", function_exists($f) ? "yes" : "no", "\n";'
+      - name: MFTF answers
+        shell: bash
+        run: |
+          mkdir mftf && cd mftf
+          gh release download "$MFTF" -R rnscommerce/mftf-distros -p '*.tgz'
+          tar xzf *.tgz
+          cd 6.0.1
+          php bin/mftf --version
+          php bin/mftf list:tests --help | head -5
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: What `find` and `grep` are here
+        shell: bash
+        run: |
+          which -a find grep || true
+          find --version 2>&1 | head -2 || true
+          find . -maxdepth 1 -name '*.yml' -printf '%p\t%T@\t%s\n' 2>&1 | head -2 || true
+  static:
+    # The same recipe as the Linux runtime, on static-php-cli for Windows.
+    runs-on: windows-latest
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - name: Fetch spc
+        shell: pwsh
+        run: Invoke-WebRequest "https://github.com/crazywhalecc/static-php-cli/releases/download/$env:SPC/spc-windows-x64.exe" -OutFile spc.exe
+      - name: Doctor
+        run: .\spc.exe doctor --auto-fix
+      - name: Download sources
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\spc.exe download --with-php=8.3 --for-extensions="bcmath,bz2,ctype,curl,dom,fileinfo,filter,iconv,igbinary,mbstring,opcache,openssl,pdo,pdo_sqlite,phar,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib" --prefer-pre-built --retry=3
+      - name: Build
+        shell: pwsh
+        run: .\spc.exe build "bcmath,bz2,ctype,curl,dom,fileinfo,filter,iconv,igbinary,mbstring,opcache,openssl,pdo,pdo_sqlite,phar,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib" --build-cli
+      - name: Extensions
+        shell: pwsh
+        run: |
+          buildroot\bin\php.exe -v
+          buildroot\bin\php.exe -r 'echo implode("\n", get_loaded_extensions());'
