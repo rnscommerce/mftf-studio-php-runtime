@@ -12,10 +12,10 @@ on:
       - .github/workflows/php.yml
   workflow_dispatch:
 env:
-  BUILD: '2'
+  BUILD: '3'
   SPC: '2.8.5'
   XDEBUG: '3.5.3'
-  EXTENSIONS: bcmath,bz2,ctype,curl,dom,fileinfo,filter,gd,iconv,igbinary,intl,mbregex,mbstring,opcache,openssl,pcntl,pdo,pdo_sqlite,phar,posix,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,zip,zlib
+  EXTENSIONS: bcmath,bz2,ctype,curl,dom,fileinfo,filter,gd,iconv,igbinary,intl,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pdo_sqlite,phar,posix,session,simplexml,soap,sockets,sodium,sqlite3,tokenizer,xml,xsl,zip,zlib
 jobs:
   build:
     runs-on: ubuntu-latest
