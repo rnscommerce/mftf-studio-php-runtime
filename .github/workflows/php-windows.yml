@@ -83,6 +83,8 @@ jobs:
           zend_extension=${MFTF_STUDIO_PHP_RUNTIME}\ext\php_xdebug.dll
           xdebug.mode=off
           INI
+          # From 8.5 OPcache is part of PHP itself, with no DLL to load.
+          [[ -f php/ext/php_opcache.dll ]] || sed -i '/^zend_extension=opcache/d' php/php.ini
       - name: Composer
         run: |
           curl -fsSL "https://getcomposer.org/download/$COMPOSER/composer.phar" -o php/composer.phar
