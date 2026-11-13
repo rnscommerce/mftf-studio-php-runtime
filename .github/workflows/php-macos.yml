@@ -35,6 +35,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           bin/setup-runtime
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+          export PATH="$PWD/bin:$PATH"
           bin/composer install --no-dev --no-interaction
           bin/spc doctor --auto-fix
       - name: Download sources
