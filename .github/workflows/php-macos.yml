@@ -1,0 +1,91 @@
+name: php-macos
+# The PHP CLI for MFTF Studio to carry on an Apple Silicon Mac, built with
+# static-php-cli on a Mac of that kind, with Xdebug beside it. A pull request
+# that changes this file builds it; running the workflow on main publishes it
+# as a release named php-<version>-macos-<BUILD>.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/php-macos.yml
+  workflow_dispatch:
+env:
+  BUILD: '1'
+  SPC: '2.8.5'
+  XDEBUG: '3.5.3'
+  EXTENSIONS: bcmath,bz2,ctype,curl,dom,fileinfo,filter,gd,iconv,igbinary,intl,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pdo_sqlite,phar,posix,session,simplexml,soap,sockets,sodium,sqlite3,tokenizer,xml,xsl,zip,zlib
+  # The oldest macOS the binary starts on.
+  MACOSX_DEPLOYMENT_TARGET: '12.0'
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.4']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: crazywhalecc/static-php-cli
+          ref: ${{ env.SPC }}
+      - name: static-php-cli and what it builds with
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bin/setup-runtime
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+          export PATH="$PWD/bin:$PATH"
+          bin/composer install --no-dev --no-interaction
+          bin/spc doctor --auto-fix
+      - name: Download sources
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bin/spc download --with-php=${{ matrix.php }} --for-extensions="$EXTENSIONS,xdebug" --custom-url="xdebug:https://github.com/xdebug/xdebug/archive/refs/tags/$XDEBUG.tar.gz" --prefer-pre-built --retry=3
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bin/spc build "$EXTENSIONS" --build-shared=xdebug --build-cli
+      - name: Check
+        run: |
+          php=buildroot/bin/php
+          "$php" -v
+          "$php" -r 'exit(str_starts_with(PHP_VERSION, $argv[1] . ".") ? 0 : 1);' "${{ matrix.php }}"
+          loaded="$("$php" -r 'echo strtolower(implode(",", get_loaded_extensions()));')"
+          for ext in ${EXTENSIONS//,/ }; do
+            case "$ext" in
+              mbregex) "$php" -r 'exit(function_exists("mb_ereg") ? 0 : 1);' ;;
+              opcache) [[ ",$loaded," == *",zend opcache,"* ]] ;;
+              *) [[ ",$loaded," == *",$ext,"* ]] ;;
+            esac || { echo "missing $ext"; exit 1; }
+          done
+          file "$php" | grep -q arm64
+          otool -L "$php" buildroot/modules/xdebug.so
+          # Nothing of Homebrew's, which a Mac that runs Studio need not have.
+          ! otool -L "$php" buildroot/modules/xdebug.so | grep -E '/opt/homebrew|/usr/local'
+          "$php" -d zend_extension="$PWD/buildroot/modules/xdebug.so" --ri xdebug
+          "$php" -d zend_extension="$PWD/buildroot/modules/xdebug.so" -r 'exit(phpversion("xdebug") === $argv[1] ? 0 : 1);' "$XDEBUG"
+          echo "RELEASE=php-$("$php" -r 'echo PHP_VERSION;')-macos-$BUILD" >> "$GITHUB_ENV"
+      - name: Package
+        run: |
+          mkdir php
+          cp buildroot/bin/php php/php
+          cp buildroot/modules/xdebug.so php/xdebug.so
+          cp -r buildroot/license php/license
+          tar czf "$RELEASE-arm64.tar.gz" -C php .
+          shasum -a 256 "$RELEASE-arm64.tar.gz" > "$RELEASE-arm64.tar.gz.sha256"
+          cat "$RELEASE-arm64.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ matrix.php }}-macos
+          path: ${{ env.RELEASE }}-arm64.tar.gz
+      - name: Release
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$RELEASE" \
+            --notes "PHP CLI for macOS arm64, needs macOS $MACOSX_DEPLOYMENT_TARGET or newer, NTS, built with static-php-cli $SPC. Extensions: $EXTENSIONS. Xdebug $XDEBUG beside it as xdebug.so, loaded with -d zend_extension. Licences of PHP, its extensions and the libraries linked in are in license/." \
+            "$RELEASE-arm64.tar.gz" "$RELEASE-arm64.tar.gz.sha256"
